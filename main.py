@@ -15,6 +15,8 @@ from telegram.ext import (
 )
 from telegram.constants import ChatAction
 from mistralai import Mistral
+import pkg_resources
+import sys
 
 # Setup logging
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -31,6 +33,18 @@ ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "tnixai2025")
 if not MISTRAL_API_KEY or not TELEGRAM_BOT_TOKEN:
     logger.error("Missing MISTRAL_API_KEY or TELEGRAM_BOT_TOKEN in .env. Please check your configuration.")
     raise ValueError("Missing MISTRAL_API_KEY or TELEGRAM_BOT_TOKEN in .env. Set them in your .env file or environment variables.")
+
+# Check PTB installation and webhooks extra
+try:
+    ptb_version = pkg_resources.get_distribution("python-telegram-bot").version
+    logger.info(f"python-telegram-bot version: {ptb_version}")
+    # Check if webhooks extra is installed by looking for aiohttp (a dependency)
+    has_webhooks = any("aiohttp" in req for req in pkg_resources.get_distribution("python-telegram-bot")._get_metadata("requires.txt"))
+    if not has_webhooks:
+        logger.warning("Webhooks extra not detected in python-telegram-bot. Falling back to polling.")
+except pkg_resources.DistributionNotFound:
+    logger.error("python-telegram-bot not found in environment")
+    sys.exit(1)
 
 # Admin user ID
 ADMIN_USER_ID = "5842560424"
@@ -454,18 +468,23 @@ def main():
         app.add_handler(CommandHandler("clear", clear))
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
-        # Determine run mode (polling or webhook)
-        if os.environ.get("USE_WEBHOOK", "false").lower() == "true":
-            port = int(os.environ.get("PORT", 8443))
-            app.run_webhook(
-                listen="0.0.0.0",
-                port=port,
-                url_path=TELEGRAM_BOT_TOKEN,
-                webhook_url=f"https://{os.environ.get('DOMAIN')}/{TELEGRAM_BOT_TOKEN}"
-            )
-            logger.info(f"Bot running in webhook mode on port {port}")
+        # Determine run mode with webhook support check
+        use_webhook = os.environ.get("USE_WEBHOOK", "false").lower() == "true"
+        if use_webhook and has_webhooks:
+            try:
+                port = int(os.environ.get("PORT", 8443))
+                app.run_webhook(
+                    listen="0.0.0.0",
+                    port=port,
+                    url_path=TELEGRAM_BOT_TOKEN,
+                    webhook_url=f"https://{os.environ.get('DOMAIN')}/{TELEGRAM_BOT_TOKEN}"
+                )
+                logger.info(f"Bot running in webhook mode on port {port}")
+            except Exception as e:
+                logger.error(f"Webhook setup failed: {str(e)}. Falling back to polling mode.")
+                app.run_polling(allowed_updates=Update.ALL_TYPES)
         else:
-            logger.info("Bot running in polling mode")
+            logger.info("Running in polling mode (webhook disabled or not supported)")
             app.run_polling(allowed_updates=Update.ALL_TYPES)
 
     except Exception as e:
